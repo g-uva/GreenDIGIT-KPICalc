@@ -6,7 +6,7 @@ import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from fastapi import Body, FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Any, Dict, Optional
 from pymongo import MongoClient
 
@@ -185,42 +185,118 @@ def wattnet_fetch(lat: float, lon: float, start: datetime, end: datetime, aggreg
     return data
 
 class LocationResponse(BaseModel):
-    latitude: float
-    longitude: float
-    country: Optional[str] = None
-    roc: Optional[str] = None
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "latitude": 45.071,
+                    "longitude": 7.652,
+                    "country": "IT",
+                    "roc": "NGI_IT",
+                }
+            ]
+        }
+    )
+
+    latitude: float = Field(..., description="Latitude in decimal degrees.")
+    longitude: float = Field(..., description="Longitude in decimal degrees.")
+    country: Optional[str] = Field(default=None, description="ISO country code when available.")
+    roc: Optional[str] = Field(default=None, description="Regional Operations Centre reported by GOC DB.")
 
 
 class PUERequest(BaseModel):
-    site_name: str
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "site_name": "CNR-Production",
+                }
+            ]
+        }
+    )
+
+    site_name: str = Field(..., description="Human-readable site identifier present in GOC DB or the local sites map.")
 
 
 class PUEResponse(BaseModel):
-    site_name: str
-    location: LocationResponse
-    pue: float
-    source: str
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "site_name": "CNR-Production",
+                    "location": {
+                        "latitude": 45.071,
+                        "longitude": 7.652,
+                        "country": "IT",
+                        "roc": "NGI_IT",
+                    },
+                    "pue": 1.58,
+                    "source": "gocdb+local",
+                }
+            ]
+        }
+    )
+
+    site_name: str = Field(..., description="Resolved site name.")
+    location: LocationResponse = Field(..., description="Best-effort merge of location metadata from GOC DB and local mapping.")
+    pue: float = Field(..., description="Power Usage Effectiveness applied to the site.")
+    source: str = Field(..., description="Plus-delimited indicators showing where the data was resolved from (e.g. `gocdb+local`).")
 
 
 class CIRequest(BaseModel):
-    lat: float
-    lon: float
-    pue: Optional[float] = Field(default_factory=_default_pue)
-    energy_wh: Optional[float] = None
-    time: Optional[datetime] = None
-    metric_id: Optional[str] = None
-    wattnet_params: Optional[Dict[str, Any]] = None
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "lat": 45.071,
+                    "lon": 7.652,
+                    "pue": 1.58,
+                    "energy_wh": 8500,
+                    "time": "2024-05-01T12:00:00Z",
+                    "metric_id": "event-123",
+                    "wattnet_params": {"granularity": "hour"},
+                }
+            ]
+        }
+    )
+
+    lat: float = Field(..., description="Latitude in decimal degrees.")
+    lon: float = Field(..., description="Longitude in decimal degrees.")
+    pue: Optional[float] = Field(default_factory=_default_pue, description="Override for PUE; defaults to service-wide configuration when omitted.")
+    energy_wh: Optional[float] = Field(default=None, description="Energy consumption for the window in watt-hours, used to derive CFP metrics.")
+    time: Optional[datetime] = Field(default=None, description="ISO 8601 timestamp that anchors the WattNet query window. Defaults to current UTC.")
+    metric_id: Optional[str] = Field(default=None, description="Optional identifier that is forwarded to the retainment store for traceability.")
+    wattnet_params: Optional[Dict[str, Any]] = Field(default=None, description="Additional WattNet API parameters that should be forwarded as-is.")
+
 
 class CIResponse(BaseModel):
-    source: str
-    zone: Optional[str]
-    datetime: Optional[str]
-    ci_gco2_per_kwh: float
-    pue: float
-    effective_ci_gco2_per_kwh: float
-    cfp_g: Optional[float]
-    cfp_kg: Optional[float]
-    valid: bool
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "source": "wattnet",
+                    "zone": "IT-NO",
+                    "datetime": "2024-05-01T12:05:00Z",
+                    "ci_gco2_per_kwh": 320.5,
+                    "pue": 1.58,
+                    "effective_ci_gco2_per_kwh": 506.39,
+                    "cfp_g": 4304.3,
+                    "cfp_kg": 4.3043,
+                    "valid": True,
+                }
+            ]
+        }
+    )
+
+    source: str = Field(..., description="Origin system for the carbon intensity data.")
+    zone: Optional[str] = Field(default=None, description="Grid zone reported by WattNet, if provided.")
+    datetime: Optional[str] = Field(default=None, description="Timestamp returned by WattNet for the metric.")
+    ci_gco2_per_kwh: float = Field(..., description="Carbon intensity in grams of CO₂ per kWh returned by WattNet.")
+    pue: float = Field(..., description="PUE value applied during the calculation.")
+    effective_ci_gco2_per_kwh: float = Field(..., description="Carbon intensity adjusted with the provided PUE.")
+    cfp_g: Optional[float] = Field(default=None, description="Calculated carbon footprint in grams, when energy consumption is provided.")
+    cfp_kg: Optional[float] = Field(default=None, description="Calculated carbon footprint in kilograms, when energy consumption is provided.")
+    valid: bool = Field(..., description="Flag propagated from WattNet indicating data quality.")
     
 class MetricsEnvelope(BaseModel):
     # top-level convenience fields
@@ -301,8 +377,31 @@ def _reload_sites_map_if_needed(site_name: str) -> Optional[dict]:
     return SITES_MAP.get(site_name)
 
 
-@app.post("/get-pue", response_model=PUEResponse)
-def get_pue(req: PUERequest):
+@app.post(
+    "/get-pue",
+    response_model=PUEResponse,
+    summary="Retrieve PUE and location metadata for a site",
+    description=(
+        "Looks up the requested site on GOC DB and the local sites mapping to return location "
+        "metadata and an effective PUE.\n\n"
+        "**Notes**\n"
+        "- When neither source provides a PUE, the service default is returned and marked in the `source` field.\n"
+        "- Location fields are populated with the first non-null value across the available sources."
+    ),
+    response_description="Merged site metadata and resolved PUE values.",
+)
+def get_pue(
+    req: PUERequest = Body(
+        ...,
+        description="Site lookup request.",
+        examples={
+            "byName": {
+                "summary": "Lookup by known site name",
+                "value": {"site_name": "CNR-Production"},
+            }
+        },
+    )
+):
     site_name = req.site_name.strip()
     if not site_name:
         raise HTTPException(status_code=400, detail="site_name is required")
@@ -361,8 +460,39 @@ def get_pue(req: PUERequest):
     return PUEResponse(site_name=site_name, location=location, pue=pue, source=source)
 
 
-@app.post("/get-ci", response_model=CIResponse)
-def get_ci(req: CIRequest):
+@app.post(
+    "/get-ci",
+    response_model=CIResponse,
+    summary="Compute carbon intensity for a given location",
+    description=(
+        "Queries WattNet for the carbon intensity at the provided coordinates and time window "
+        "and returns the effective carbon intensity using the supplied or default PUE.\n\n"
+        "**Notes**\n"
+        "- The service queries a three-hour window centred on the provided `time` (or current UTC).\n"
+        "- Optional `wattnet_params` entries are forwarded directly to WattNet for advanced querying."
+    ),
+    response_description="Carbon intensity result as returned by WattNet, with derived effective CI and CFP.",
+)
+def get_ci(
+    req: CIRequest = Body(
+        ...,
+        description="Carbon intensity computation parameters.",
+        examples={
+            "basic": {
+                "summary": "Request with custom PUE and energy consumption",
+                "value": {
+                    "lat": 45.071,
+                    "lon": 7.652,
+                    "pue": 1.58,
+                    "energy_wh": 8500,
+                    "time": "2024-05-01T12:00:00Z",
+                    "metric_id": "event-123",
+                    "wattnet_params": {"granularity": "hour"},
+                },
+            }
+        },
+    )
+):
     when  = req.time or datetime.now(timezone.utc)
     start = when - timedelta(hours=1)
     end   = when + timedelta(hours=2)
