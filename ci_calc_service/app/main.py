@@ -9,7 +9,6 @@ from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Any, Dict, Optional
 from pymongo import MongoClient
-from pathlib import Path
 
 APP_DESCRIPTION = (
     "Service providing GreenDIGIT KPIs. It retrieves location information from "
@@ -31,61 +30,28 @@ RETAIN_MONGO_URI = os.getenv("RETAIN_MONGO_URI")
 RETAIN_DB_NAME   = os.getenv("RETAIN_DB_NAME", "ci-retainment-db")
 RETAIN_COLL      = os.getenv("RETAIN_COLL", "pending_ci")
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _resolve_optional_path(raw: Optional[str]) -> Optional[str]:
-    if not raw:
-        return None
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = (REPO_ROOT / candidate).resolve()
-    if candidate.exists():
-        return str(candidate)
-    print(f"[gocdb] warning: path not found: {candidate}", flush=True)
-    return None
-
-
-def _sites_path() -> str:
-    env_path = os.environ.get("SITES_JSON")
-    if env_path:
-        candidate = Path(env_path).expanduser()
-        if not candidate.is_absolute():
-            candidate = (REPO_ROOT / candidate).resolve()
-        return str(candidate)
-    for candidate in (
-        REPO_ROOT / "output/sites_latlngpue.json",
-        REPO_ROOT / "data/sites_latlngpue.json",
-        Path("/data/sites_latlngpue.json"),
-    ):
-        if candidate.exists():
-            return str(candidate)
-    return "/data/sites_latlngpue.json"
-
-
 CNR_SQL_FORWARD_URL = os.getenv("CNR_SQL_FORWARD_URL", "http://sql-cnr-adapter:8033/cnr-sql-service")
 PUE_DEFAULT = os.getenv("PUE_DEFAULT", "1.7")
 
-SITES_PATH = _sites_path()
+SITES_PATH = os.environ.get("SITES_JSON", "/data/sites_latlngpue.json")
 SITES_MAP: dict[str, dict] = {}  # site_name -> {lat, lon, pue}
 
 sess = requests.Session()
 
-DEFAULT_CERT_DIR = REPO_ROOT / ".cert"
-DEFAULT_CERT_PATH = DEFAULT_CERT_DIR / "GDIGIT_Cert.pem"
-DEFAULT_KEY_PATH = DEFAULT_CERT_DIR / "gd_gocdb_private.pem"
 
 GOCDB_BASE = os.getenv("GOCDB_BASE", "https://goc.egi.eu/gocdbpi")
 GOCDB_SCOPE = os.getenv("GOCDB_SCOPE")
 GOCDB_TOKEN = os.getenv("GOCDB_TOKEN") or os.getenv("GOCDB_OAUTH_TOKEN")
-GOCDB_CERT = os.getenv("GOCDB_CERT", str(DEFAULT_CERT_PATH))
-GOCDB_KEY = os.getenv("GOCDB_KEY", str(DEFAULT_KEY_PATH))
 GOCDB_TIMEOUT = float(os.getenv("GOCDB_TIMEOUT", "20"))
+
+CERT_BASE = "/etc/gocdb-cert"
+GOCDB_CERT = os.getenv("GOCDB_CERT", f"{CERT_BASE}/GDIGIT_Cert.pem")
+GOCDB_KEY = os.getenv("GOCDB_KEY", f"{CERT_BASE}/gd_gocdb_private.pem")
 GOCDB_CA = os.getenv("GOCDB_CA")
 
-CERT_PATH = _resolve_optional_path(GOCDB_CERT)
-KEY_PATH = _resolve_optional_path(GOCDB_KEY)
-CA_PATH = _resolve_optional_path(GOCDB_CA)
+CERT_PATH = GOCDB_CERT.strip() if GOCDB_CERT else None
+KEY_PATH = GOCDB_KEY.strip() if GOCDB_KEY else None
+CA_PATH = GOCDB_CA.strip() if GOCDB_CA else None
 
 GOCDB_ENDPOINT_TYPE = os.getenv("GOCDB_ENDPOINT", "").strip().lower() or (
     "private" if (CERT_PATH or KEY_PATH or GOCDB_TOKEN) else "public"
