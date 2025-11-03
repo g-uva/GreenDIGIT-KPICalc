@@ -72,15 +72,13 @@ The resulting file shape (used by this CI service via `SITES_JSON`):
   "lat": 52.0,
   "lon": 5.0,
   "time": "2025-09-04T12:00:00Z",
-  "pue": 1.4,
-  "use_mock": true,
-  "energy_kwh": 3.0
+  "pue": 1.4
 }
 ```
 
 **Curl**
 ```bash
-curl -s -X POST http://localhost:8011/ci   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -d '{"lat":52.0,"lon":5.0,"time":"2025-09-04T12:00:00Z","pue":1.4,"use_mock":true,"energy_kwh":3.0}'
+curl -s -X POST http://localhost:8011/ci   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -d '{"lat":52.0,"lon":5.0,"time":"2025-09-04T12:00:00Z","pue":1.4}'
 ```
 
 ### `/rank-sites` — order sites by best Effective CI at a start time
@@ -88,14 +86,13 @@ curl -s -X POST http://localhost:8011/ci   -H "Authorization: Bearer $TOKEN"   -
 **JSON example**
 ```json
 {
-  "start_time": "2025-09-04T12:00:00Z",
-  "use_mock": true
+  "start_time": "2025-09-04T12:00:00Z"
 }
 ```
 
 **Curl**
 ```bash
-curl -s -X POST http://localhost:8011/rank-sites   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -d '{"start_time":"2025-09-04T12:00:00Z","use_mock":true}'
+curl -s -X POST http://localhost:8011/rank-sites   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -d '{"start_time":"2025-09-04T12:00:00Z"}'
 ```
 
 ### Auth
@@ -105,6 +102,5 @@ Authorization: Bearer <jwt>
 ```
 
 ### Notes
-- **Mock mode** (`use_mock: true`) generates random CI values (150–600 gCO₂e/kWh) for prototyping.
 - PUE can be per-site (in `data/sites_enriched.json`) or default via `PUE_DEFAULT`.
 - The service validates tokens by calling your auth server’s `/verify_token` (configure `AUTH_VERIFY_URL`).

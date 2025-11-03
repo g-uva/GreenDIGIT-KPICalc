@@ -39,6 +39,10 @@ GOCDB_TOKEN = os.getenv("GOCDB_TOKEN") or os.getenv("GOCDB_OAUTH_TOKEN")
 GOCDB_CERT = os.getenv("GOCDB_CERT")
 GOCDB_KEY = os.getenv("GOCDB_KEY")
 GOCDB_TIMEOUT = float(os.getenv("GOCDB_TIMEOUT", "20"))
+GOCDB_CA = os.getenv("GOCDB_CA")
+GOCDB_ENDPOINT_TYPE = os.getenv("GOCDB_ENDPOINT", "").strip().lower() or (
+    "private" if (GOCDB_CERT or GOCDB_KEY or GOCDB_TOKEN) else "public"
+)
 
 goc_sess = requests.Session()
 goc_sess.headers["Accept"] = "application/xml"
@@ -46,6 +50,8 @@ if GOCDB_TOKEN:
     goc_sess.headers["Authorization"] = f"Bearer {GOCDB_TOKEN}"
 if GOCDB_CERT:
     goc_sess.cert = (GOCDB_CERT, GOCDB_KEY) if GOCDB_KEY else GOCDB_CERT
+if GOCDB_CA:
+    goc_sess.verify = GOCDB_CA
 
 PUE_FALLBACK = 1.7
 
@@ -67,7 +73,8 @@ def _resolve_pue(value: Optional[Any]) -> float:
 
 
 def _gocdb_endpoint() -> str:
-    return f"{GOCDB_BASE.rstrip('/')}/public/"
+    suffix = "private" if GOCDB_ENDPOINT_TYPE == "private" else "public"
+    return f"{GOCDB_BASE.rstrip('/')}/{suffix}/"
 
 
 def _text_or_none(el: Optional[ET.Element], path: str) -> Optional[str]:
