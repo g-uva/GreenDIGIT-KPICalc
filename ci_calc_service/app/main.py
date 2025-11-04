@@ -5,7 +5,7 @@ import sys
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Any, Dict, Optional
 from pymongo import MongoClient
@@ -461,18 +461,7 @@ def _reload_sites_map_if_needed(site_name: str) -> Optional[dict]:
     ),
     response_description="Merged site metadata and resolved PUE values.",
 )
-def get_pue(
-    req: PUERequest = Body(
-        ...,
-        description="Site lookup request.",
-        examples={
-            "byName": {
-                "summary": "Lookup by known site name",
-                "value": {"site_name": "CNR-Production"},
-            }
-        },
-    )
-):
+def _compute_pue_response(req: PUERequest) -> PUEResponse:
     site_name = req.site_name.strip()
     if not site_name:
         raise HTTPException(status_code=400, detail="site_name is required")
@@ -531,39 +520,31 @@ def get_pue(
     return PUEResponse(site_name=site_name, location=location, pue=pue, source=source)
 
 
-@app.post(
-    "/get-ci",
-    response_model=CIResponse,
-    summary="Compute carbon intensity for a given location",
+@app.get(
+    "/pue",
+    response_model=PUEResponse,
+    summary="Retrieve PUE and location metadata for a site",
     description=(
-        "Queries WattNet for the carbon intensity at the provided coordinates and time window "
-        "and returns the effective carbon intensity using the supplied or default PUE.\n\n"
+        "Looks up the requested site on GOC DB and the local sites mapping to return location "
+        "metadata and an effective PUE.\n\n"
         "**Notes**\n"
-        "- The service queries a three-hour window centred on the provided `time` (or current UTC).\n"
-        "- Optional `wattnet_params` entries are forwarded directly to WattNet for advanced querying."
+        "- When neither source provides a PUE, the service default is returned and marked in the `source` field.\n"
+        "- Location fields are populated with the first non-null value across the available sources."
     ),
-    response_description="Carbon intensity result as returned by WattNet, with derived effective CI and CFP.",
+    response_description="Merged site metadata and resolved PUE values.",
 )
-def get_ci(
-    req: CIRequest = Body(
+def get_pue(
+    site_name: str = Query(
         ...,
-        description="Carbon intensity computation parameters.",
-        examples={
-            "basic": {
-                "summary": "Request with custom PUE and energy consumption",
-                "value": {
-                    "lat": 45.071,
-                    "lon": 7.652,
-                    "pue": 1.58,
-                    "energy_wh": 8500,
-                    "time": "2024-05-01T12:00:00Z",
-                    "metric_id": "event-123",
-                    "wattnet_params": {"granularity": "hour"},
-                },
-            }
-        },
-    )
+        description="Human-readable site identifier present in GOC DB or the local sites map.",
+        examples={"byName": {"summary": "Lookup by known site name", "value": "CNR-Production"}},
+    ),
 ):
+    req = PUERequest(site_name=site_name)
+    return _compute_pue_response(req)
+
+
+def _compute_ci_response(req: CIRequest) -> CIResponse:
     when  = req.time or datetime.now(timezone.utc)
     start = when - timedelta(hours=1)
     end   = when + timedelta(hours=2)
@@ -591,6 +572,57 @@ def get_ci(
         cfp_kg=cfp_kg,
         valid=valid_flag,
     )
+
+
+@app.get(
+    "/ci",
+    response_model=CIResponse,
+    summary="Compute carbon intensity for a given location",
+    description=(
+        "Queries WattNet for the carbon intensity at the provided coordinates and time window "
+        "and returns the effective carbon intensity using the supplied or default PUE.\n\n"
+        "**Notes**\n"
+        "- The service queries a three-hour window centred on the provided `time` (or current UTC).\n"
+        "- Optional `wattnet_params` entries are forwarded directly to WattNet for advanced querying."
+    ),
+    response_description="Carbon intensity result as returned by WattNet, with derived effective CI and CFP.",
+)
+def get_ci(
+    lat: float = Query(..., description="Latitude in decimal degrees."),
+    lon: float = Query(..., description="Longitude in decimal degrees."),
+    pue: Optional[float] = Query(None, description="Power Usage Effectiveness to apply. Defaults to 1.7 when omitted."),
+    energy_wh: Optional[float] = Query(None, description="Energy consumed in watt-hours. Used to derive CFP if provided."),
+    time: Optional[str] = Query(None, description="ISO 8601 timestamp (UTC) for the query window, e.g. 2024-01-01T00:00:00Z."),
+    metric_id: Optional[str] = Query(None, description="Optional metric identifier propagated to retainment."),
+    wattnet_params: Optional[str] = Query(
+        None,
+        description="Additional WattNet query parameters as a JSON object string.",
+        examples={"hourly": {"summary": "Hourly granularity", "value": "{\"granularity\": \"hour\"}"}},
+    ),
+):
+    ci_kwargs: Dict[str, Any] = {
+        "lat": lat,
+        "lon": lon,
+    }
+    if pue is not None:
+        ci_kwargs["pue"] = pue
+    if energy_wh is not None:
+        ci_kwargs["energy_wh"] = energy_wh
+    if time:
+        try:
+            ci_kwargs["time"] = _cli_parse_time(time)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if metric_id:
+        ci_kwargs["metric_id"] = metric_id
+    if wattnet_params:
+        try:
+            ci_kwargs["wattnet_params"] = _cli_parse_wattnet_params(wattnet_params)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    req = CIRequest(**ci_kwargs)
+    return _compute_ci_response(req)
 
 @app.post("/ci-valid", response_model=CIResponse)
 def compute_ci_valid(req: CIRequest):
@@ -778,7 +810,7 @@ def _cli_parse_wattnet_params(raw: str) -> Dict[str, Any]:
 def _cli_get_pue(args: argparse.Namespace) -> None:
     req = PUERequest(site_name=args.site_name)
     try:
-        resp = get_pue(req)
+        resp = _compute_pue_response(req)
     except HTTPException as exc:
         _cli_exit_with_http_error(exc)
     except Exception as exc:
@@ -811,7 +843,7 @@ def _cli_get_ci(args: argparse.Namespace) -> None:
 
     req = CIRequest(**ci_kwargs)
     try:
-        resp = get_ci(req)
+        resp = _compute_ci_response(req)
     except HTTPException as exc:
         _cli_exit_with_http_error(exc)
     except Exception as exc:
